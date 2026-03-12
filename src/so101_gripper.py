@@ -136,7 +136,7 @@ class SO101ArmGripper:
             self.stop_close_flag = False
             print(f"\n[SO101夹爪] 闭合结束，最终位置={self._get_current_gripper_pos():.2f}")
 
-    def gripper_close(self, target_pos=16.0):
+    def gripper_close(self, target_pos=10.0):
         """
         【对外接口】非阻塞夹爪闭合（立即返回，后台线程执行）
         :param target_pos: 闭合目标位置（0~100，0为全闭）
@@ -234,7 +234,7 @@ class SO101ArmGripper:
         theta_rad = np.arccos(cos_theta)
         theta_deg = np.degrees(theta_rad)
         print ("夹角为",theta_deg,"度")
-        if theta_deg < 174: 
+        if theta_deg < 150: 
             return False
         else :
             return True
