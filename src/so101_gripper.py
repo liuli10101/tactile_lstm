@@ -45,7 +45,10 @@ class SO101ArmGripper:
         self.close_step = 2.0       # 单次闭合步长（越小中断越灵敏，建议1~5）
         self.close_interval = 0.05  # 单次步长执行间隔（秒，越小闭合越平滑）
 
-        self.t = 0
+        self.r = 0      #力平衡度（(fa-fb)/(fa+fb)） 
+        self.force_r = 0.5  #力平衡度允许范围
+        self.theta_max = 5  #wrist旋转最大值
+        self.t = 0      #夹爪归一化值，8～80：0～90度
         self.Rab = np.array([[np.cos(self.t), 0, -np.sin(self.t)],
                             [0, -1, 0],
                             [-np.sin(self.t), 0, -np.cos(self.t)]])
@@ -136,7 +139,7 @@ class SO101ArmGripper:
             self.stop_close_flag = False
             print(f"\n[SO101夹爪] 闭合结束，最终位置={self._get_current_gripper_pos():.2f}")
 
-    def gripper_close(self, target_pos=10.0):
+    def gripper_close(self, target_pos=6.0):
         """
         【对外接口】非阻塞夹爪闭合（立即返回，后台线程执行）
         :param target_pos: 闭合目标位置（0~100，0为全闭）
@@ -203,6 +206,22 @@ class SO101ArmGripper:
         except Exception as e:
             print(f"[SO101夹爪] 打开失败：{e}")
             return False
+    
+    def wrist_roll(self):
+        """依据力平衡度r末端旋转"""
+        if not self.is_connected:
+            print("[SO101夹爪] 错误：未连接，无法执行停止")
+            return False
+        r = max(-self.force_r, min(self.force_r, self.r))
+        theta = (r + self.force_r) /self.force_r * self.theta_max - self.theta_max
+        try:
+            self.arm.send_action({"wrist_roll.pos": theta})
+            print("夹爪旋转至：",theta)
+            return True
+        except Exception as e:
+            print(f"[SO101夹爪] 旋转失败：{e}")
+            return False
+
 
     def disconnect(self):
         """安全断开连接"""
@@ -224,17 +243,23 @@ class SO101ArmGripper:
             return False
 
     def force_balance (self,fa,fb):
+        self.t = (self._get_current_gripper_pos()-8)/72 * (np.pi/2)
+        print("夹爪夹角：",self.t)
         Afb =  self.Rab @ fb 
         dot_product = np.dot(fa, Afb)
         norm_a = np.linalg.norm(fa)
-        norm_b = np.linalg.norm(Afb)
-        cos_theta = dot_product / (norm_a * norm_b)
+        norm_b = np.linalg.norm(fb)
+        norm_afb = np.linalg.norm(Afb)
+        cos_theta = dot_product / (norm_a * norm_afb)
         cos_theta = np.clip(cos_theta, -1.0, 1.0)  # 范围限制
         # 求夹角
         theta_rad = np.arccos(cos_theta)
         theta_deg = np.degrees(theta_rad)
         print ("夹角为",theta_deg,"度")
-        if theta_deg < 150: 
+        # 力大小
+        self.r = (norm_a-norm_b)/(norm_a+norm_b)        #力平衡度  
+        print ("力平衡度为",self.r)
+        if theta_deg < 170 or self.r > self.force_r: 
             return False
         else :
             return True

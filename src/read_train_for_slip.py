@@ -24,12 +24,12 @@ class HighSpeedCommBoard:
         #训练数据格式、标签、保存路径等
         self.dataset_X = []
         self.dataset_y = []
-        self.current_label = 0  # 0无滑动,1滑动
+        self.current_label = 1  # 0无滑动,1滑动
         self.slip_read_counts = 0
         self.count_0 = 20
         self.count_1 = 10
         self.record = 0     # 0不记录，1记录
-        self.save_path = "/home/liuli/tactile_lstm/train_data/data311/val_311_stable.npz"
+        self.save_path = "/home/liuli/tactile_lstm/train_data/data312/312_slip1.npz"
 
         #容量20的数据缓冲区
         self.tactile_data_fifo = deque(maxlen=20) 

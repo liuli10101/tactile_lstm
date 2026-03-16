@@ -185,7 +185,8 @@ def main():
     detector = SlipDetector(
         "/home/liuli/tactile_lstm/models/slip_model_lstm2.pth"
     )
-    
+    gripper.wrist_roll()       #旋转夹爪至初始位置
+    time.sleep(0.05)
     gripper.gripper_open()  #打开夹爪
     print("闭合夹爪")
     gripper.gripper_close()
@@ -232,13 +233,13 @@ def main():
             elif state == "GRASPING":
                 # !!!!!!!!!!!!!!!!!?
                 if gripper.force_balance(fa,fb):
-                    print("夹取力方向在稳定范围内")
-
+                    print("夹取力在稳定范围内")
+                
                 if sensor.read_counts < 30:
                     print("等待数据窗口构建完成,当前循环次数=",sensor.read_counts)
                     continue
                 if len(sensor.tactile_data_fifo) == 20:
-
+                    # gripper.wrist_roll()
                     window = np.array(sensor.tactile_data_fifo, dtype=np.float32)
                     # print(sensor.tactile_data_fifo)
                     start_time = time.time()
@@ -249,7 +250,7 @@ def main():
 
                     if slip:
                         print("确认滑移 → 增力")
-
+                        gripper.wrist_roll()
                         gripper.gripper_close()
                         time.sleep(0.1)
                         gripper.gripper_stop()
