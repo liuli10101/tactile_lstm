@@ -305,7 +305,7 @@ if __name__ == "__main__":
     # ==================== Path Config ====================
     data_folder = "/home/liuli/tactile_lstm/train_data/data306"
     model_save_dir = "/home/liuli/tactile_lstm/models"
-    eval_output_dir = "/home/liuli/tactile_lstm/eval_results"
+    eval_output_dir = "/home/liuli/tactile_lstm/eval_results/eval_results/eval_results_lstm2"
     os.makedirs(model_save_dir, exist_ok=True)
     
     model_name = "lstm2_314"

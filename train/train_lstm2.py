@@ -230,7 +230,7 @@ def train_model(model, train_loader, val_loader, device, epochs=30, patience=5):
 
             best_val_f1 = val_f1
 
-            torch.save(model.state_dict(), "/home/liuli/tactile_lstm/models/lstm2_311.pth")
+            torch.save(model.state_dict(), "/home/liuli/tactile_lstm/models/lstm2_all.pth")
 
             counter = 0
 
@@ -251,7 +251,7 @@ def train_model(model, train_loader, val_loader, device, epochs=30, patience=5):
 # 6 主程序
 if __name__ == "__main__":
 
-    data_folder = "/home/liuli/tactile_lstm/train_data/data_306311"
+    data_folder = "/home/liuli/tactile_lstm/train_data/data_all"
 
     all_files = os.listdir(data_folder)
 
@@ -313,6 +313,29 @@ if __name__ == "__main__":
     train_model(model, train_loader, val_loader, device, epochs=30)
 
     # =========================
+    # onnx
+    # =========================
+    # model = SlipDetectionModel()
+
+
+    # dummy_input = torch.randn(1, 20, 624) 
+
+    # # 导出为 ONNX
+    # torch.onnx.export(
+    #     model, 
+    #     dummy_input, 
+    #     "slip_model.onnx", 
+    #     export_params=True,
+    #     opset_version=12,
+    #     do_constant_folding=True,
+    #     input_names=['input'],
+    #     output_names=['output'],
+    #     dynamic_axes={'input': {0: 'batch_size', 1: 'time_steps'}, 'output': {0: 'batch_size'}}
+    # )
+    # print("ONNX 模型已导出为 slip_lstm2.onnx")
+
+
+    # =========================
     # save
     # =========================
 
@@ -324,6 +347,6 @@ if __name__ == "__main__":
 
         "std": std
 
-    }, "/home/liuli/tactile_lstm/models/lstm2_311.pth")
+    }, "/home/liuli/tactile_lstm/models/lstm2_all.pth")
 
     print("模型保存完成")

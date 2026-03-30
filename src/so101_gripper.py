@@ -42,7 +42,7 @@ class SO101ArmGripper:
         self.is_closing = False     # 是否正在闭合（非阻塞状态标记）
         self.arrive = False         # 闭合到达标志
         self.stop_close_flag = False# 闭合停止标志位（用于中断）
-        self.close_step = 2.0       # 单次闭合步长（越小中断越灵敏，建议1~5）
+        self.close_step = 1.0       # 单次闭合步长（越小中断越灵敏，建议1~5）
         self.close_interval = 0.05  # 单次步长执行间隔（秒，越小闭合越平滑）
 
         self.r = 0      #力平衡度（(fa-fb)/(fa+fb)） 
@@ -137,6 +137,33 @@ class SO101ArmGripper:
             # 重置状态标记
             self.is_closing = False
             self.stop_close_flag = False
+            print(f"\n[SO101夹爪] 闭合结束，最终位置={self._get_current_gripper_pos():.2f}")
+    def mfac_close(self, step):
+        """
+        内部方法：实际执行夹爪闭合（线程执行体）
+        :param target_pos: 闭合目标位置（0~100）
+        """
+        try:
+            current_pos = self._get_current_gripper_pos()
+            target_pos = current_pos - 0.5 - step
+            target_pos = max (target_pos,6)
+            print(f"[SO101夹爪] 开始非阻塞闭合：当前位置={current_pos:.2f}，目标位置={target_pos:.2f}")
+
+
+
+                # 发送单步闭合指令
+            self.arm.send_action({"gripper.pos": target_pos})
+            time.sleep(self.close_interval)  # 短间隔保证平滑闭合
+
+                # 更新当前位置
+            current_pos = self._get_current_gripper_pos()
+            print(f"[SO101夹爪] 闭合中：当前位置={current_pos:.2f}", end="\r")
+
+
+
+        except Exception as e:
+            print(f"\n[SO101夹爪] 闭合线程异常：{e}")
+        finally:
             print(f"\n[SO101夹爪] 闭合结束，最终位置={self._get_current_gripper_pos():.2f}")
 
     def gripper_close(self, target_pos=6.0):
@@ -250,7 +277,8 @@ class SO101ArmGripper:
         norm_a = np.linalg.norm(fa)
         norm_b = np.linalg.norm(fb)
         norm_afb = np.linalg.norm(Afb)
-        cos_theta = dot_product / (norm_a * norm_afb)
+        eps = 1e-8
+        cos_theta = dot_product / (norm_a * norm_afb+eps)
         cos_theta = np.clip(cos_theta, -1.0, 1.0)  # 范围限制
         # 求夹角
         theta_rad = np.arccos(cos_theta)
@@ -259,7 +287,7 @@ class SO101ArmGripper:
         # 力大小
         self.r = (norm_a-norm_b)/(norm_a+norm_b)        #力平衡度  
         print ("力平衡度为",self.r)
-        if theta_deg < 170 or self.r > self.force_r: 
+        if theta_deg < 140 or np.abs(self.r) > self.force_r: 
             return False
         else :
             return True

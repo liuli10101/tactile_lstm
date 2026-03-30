@@ -183,7 +183,8 @@ def main():
 
 
     detector = SlipDetector(
-        "/home/liuli/tactile_lstm/models/slip_model_lstm2.pth"
+        # "/home/liuli/tactile_lstm/models/slip_model_lstm2.pth"
+        "/home/liuli/tactile_lstm/models/lstm2_314_full.pth"
     )
     gripper.wrist_roll()       #旋转夹爪至初始位置
     time.sleep(0.05)
