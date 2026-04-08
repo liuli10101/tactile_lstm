@@ -9,7 +9,7 @@ from so101_gripper import SO101ArmGripper
 
 
 # =============================================================================
-# 🔥 你的 Transformer 模型（已修好，输出 0~1 滑动概率）
+# 🔥 优化版 Transformer 模型定义 (D_MODEL=64 + Attention Pooling)
 # =============================================================================
 class TinyTactileTransformer(nn.Module):
     def __init__(self):
@@ -17,33 +17,54 @@ class TinyTactileTransformer(nn.Module):
         
         INPUT_DIM = 624
         SEQ_LEN = 20
-        D_MODEL = 32
+        D_MODEL = 64          # 🔴 必须和训练时一致：64
         N_HEAD = 2
         NUM_LAYERS = 1
         
+        # 输入投影
         self.proj = nn.Linear(INPUT_DIM, D_MODEL)
-        self.pos_emb = nn.Parameter(torch.randn(1, SEQ_LEN, D_MODEL))
+        self.norm_proj = nn.LayerNorm(D_MODEL)
+        self.relu = nn.GELU()
+        
+        # 位置编码
+        self.pos_emb = nn.Parameter(torch.empty(1, SEQ_LEN, D_MODEL))
+        nn.init.trunc_normal_(self.pos_emb, std=0.02)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=D_MODEL,
             nhead=N_HEAD,
-            dim_feedforward=D_MODEL * 2,
+            dim_feedforward=D_MODEL * 4,
             batch_first=True,
-            dropout=0.4,
+            dropout=0.3,
             activation="gelu"
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=NUM_LAYERS)
         
+        # 🔴 Attention Pooling 层 (必须和训练时一致)
+        self.attn = nn.Sequential(
+            nn.Linear(D_MODEL, D_MODEL // 2),
+            nn.Tanh(),
+            nn.Linear(D_MODEL // 2, 1)
+        )
+        
         self.norm = nn.LayerNorm(D_MODEL)
-        self.drop = nn.Dropout(0.4)
+        self.drop = nn.Dropout(0.3)
         self.fc = nn.Linear(D_MODEL, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = self.proj(x)
+        x = self.norm_proj(x)
+        x = self.relu(x)
+        
         x = x + self.pos_emb
         x = self.transformer(x)
-        x = x.mean(dim=1)
+        
+        # 🔴 Attention Pooling (不再是 mean 了)
+        attn_weights = self.attn(x)
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        x = torch.sum(x * attn_weights, dim=1)
+        
         x = self.norm(x)
         x = self.drop(x)
         out = self.sigmoid(self.fc(x))
@@ -57,36 +78,72 @@ class TinyTactileTransformer(nn.Module):
 
 
 # =============================================================================
-# 🧠 滑动检测器（适配 Transformer）
+# 🧠 滑动检测器（保持不变，兼容新模型）
 # =============================================================================
 class SlipDetector:
     def __init__(self, model_path):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        checkpoint = torch.load(model_path, map_location=self.device)
         
-        self.model = TinyTactileTransformer()
-        self.model.load_state_dict(checkpoint)  # Transformer权重
-        self.model.to(self.device)
-        self.model.eval()
-
-        # 如果你训练时保存了 mean/std，替换这里
+        # 初始化默认参数
+        self.model = None
         self.mean = 0.0
         self.std = 1.0
-
+        
+        # 滑动检测状态机参数
         self.high_th = 0.7
         self.low_th = 0.3
         self.state = 0
         self.slip_counter = 0
+        
+        try:
+            print(f"正在加载模型: {model_path}")
+            checkpoint = torch.load(model_path, map_location=self.device)
+            
+            self.model = TinyTactileTransformer()
+            
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                print("检测到完整 Checkpoint...")
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                
+                if 'mean' in checkpoint and 'std' in checkpoint:
+                    # 彻底的维度清洗
+                    m = checkpoint['mean']
+                    s = checkpoint['std']
+                    if isinstance(m, torch.Tensor): m = m.cpu().numpy()
+                    if isinstance(s, torch.Tensor): s = s.cpu().numpy()
+                    self.mean = m.flatten().astype(np.float32)
+                    self.std = s.flatten().astype(np.float32)
+                    print(f"✅ 标准化参数加载成功: mean.shape={self.mean.shape}")
+                else:
+                    print("⚠️ 未找到 mean/std")
+            else:
+                print("检测到纯权重文件")
+                self.model.load_state_dict(checkpoint)
+                
+        except Exception as e:
+            print(f"❌ 模型加载出错: {e}")
+            raise
+
+        if self.model is not None:
+            self.model.to(self.device)
+            self.model.eval()
 
     def predict(self, window):
+        # 1. 加 Delta
         window = self.model.add_delta_feature(window)
-        window = (window - self.mean) / self.std
+        
+        # 2. 标准化 (强制维度匹配)
+        mean_reshaped = self.mean.reshape(1, -1)
+        std_reshaped = self.std.reshape(1, -1)
+        window = (window - mean_reshaped) / std_reshaped
 
+        # 3. 转 Tensor 并加 Batch 维度
         window = torch.tensor(window, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
             prob = self.model(window).item()
 
+        # 状态机逻辑
         if prob > self.high_th:
             self.state = 1
         elif prob < self.low_th:
@@ -102,46 +159,37 @@ class SlipDetector:
 
 
 # =============================================================================
-# 🚀 你的完整 MFAC 控制器（完全不变）
+# 🚀 MFAC 控制器 (完全不变)
 # =============================================================================
 class SlipDrivenMFAC:
     def __init__(self,
-                 s_ref=0.1,                # 期望滑动安全阈值
-                 max_single_step=2,      # 【修改】降低单次最大步长，更安全
-                #  max_total_step=5.0,       # 【修改】重新启用累计步长上限，防止无限累加
-                 max_force=40.0,           # 最大法向力上限
-                 # MFAC核心参数
-                 eta=3,                   # 【修改】稍微增大步长因子，加快响应
-                 mu=0.01,                   # 正则化因子
-                 rho=0.95,                  # 遗忘因子
-                 lambda_weight=0.1,         # 控制增量权重
-                 phi_init=-5.0,              # 【修改】增大初始phi绝对值，初始控制更合理
+                 s_ref=0.1,                
+                 max_single_step=2,      
+                 max_force=40.0,           
+                 eta=3,                   
+                 mu=0.01,                   
+                 rho=0.95,                  
+                 lambda_weight=0.1,         
+                 phi_init=-5.0,              
                  phi_limit = -0.5
                  ):
-        # 控制目标与安全约束
         self.s_ref = s_ref
         self.max_single_step = max_single_step
-        # self.max_total_step = max_total_step
         self.max_force = max_force
         self.phi_limit = phi_limit
-        # MFAC核心参数
         self.eta = eta
         self.mu = mu
         self.rho = rho
         self.lambda_weight = lambda_weight
         self.phi_init = phi_init
 
-        # ======================
-        # 【核心修改】正确的状态变量定义
-        # ======================
-        self.phi = phi_init               # 伪偏导数PPD
-        self.y_prev = None                # 上一时刻的滑动概率 y(k-1)
-        self.u_prev_step = 0.0            # 上一时刻执行的步长 Δu(k-1)
-        self.u_total = 0.0                # 累计闭合总步长（仅用于安全约束）
-        self.is_first_control_cycle = True # 标记是否为第一个有效控制周期
+        self.phi = phi_init               
+        self.y_prev = None                
+        self.u_prev_step = 0.0            
+        self.u_total = 0.0                
+        self.is_first_control_cycle = True 
 
     def reset(self):
-        """每次新抓取前必须调用，重置所有状态"""
         self.phi = self.phi_init
         self.y_prev = None
         self.u_prev_step = 0.0
@@ -149,81 +197,48 @@ class SlipDrivenMFAC:
         self.is_first_control_cycle = True
 
     def update(self, current_slip_prob):
-        """
-        MFAC控制周期更新
-        """
-
-        # 第一个有效周期：仅保存状态，不执行控制和PPD更新
-
         if self.is_first_control_cycle:
             print(" 第一个控制周期，仅初始化状态")
             self.is_first_control_cycle = False
             self._save_state(current_slip_prob, 0.0)
             return 0.0
 
-
-        # PPD在线更新（严格遵循MFAC理论时序）
-
         if self.y_prev is not None:
-            delta_y = current_slip_prob - self.y_prev  # Δy(k) = y(k) - y(k-1)
-            delta_u_prev = self.u_prev_step            # Δu(k-1) = 上一次执行的步长
-
-            # 【调试打印】关键变量，确认更新条件
+            delta_y = current_slip_prob - self.y_prev
+            delta_u_prev = self.u_prev_step
+            
             print(f" delta_y={delta_y:.6f}, delta_u_prev={delta_u_prev:.6f}, 当前phi={self.phi:.4f}")
 
-            # 仅当输入有变化时更新PPD，避免分母为0
             if abs(delta_u_prev) > 1e-8:
-                # 带遗忘因子的投影算法更新PPD
                 phi_hat = self.phi + (self.rho * delta_u_prev / (self.mu + delta_u_prev ** 2)) * (delta_y - self.phi * delta_u_prev)
-                self.phi = min(phi_hat,self.phi_limit)
-                # 关键约束：phi必须为负（保证控制方向正确）
-                # if phi_hat >= -1e-6:
-                #     print(f"[PPD调试]phi符号错误，保留原值{self.phi:.4f}")
-                #     phi_hat = self.phi
-                # else:
-                #     print(f"[PPD调试]phi更新成功：{self.phi:.4f} → {phi_hat:.4f}")
-                #     self.phi = phi_hat
+                self.phi = min(phi_hat, self.phi_limit)
             else:
                 print(f"[PPD调试] 上一周期步长为0，跳过phi更新")
-
-
-        # 4. 计算滑动误差，无风险则直接返回
 
         error = current_slip_prob - self.s_ref
         if error <= 1e-6:
             print(f"[调试] 无滑动风险（误差={error:.6f}），不调整步长")
             self._save_state(current_slip_prob, 0.0)
-            self.phi =  self.phi_init        #phi初始值
+            self.phi =  self.phi_init
             return 0.0
 
-        # ======================
-        # 5. MFAC控制律计算（单向约束：只增不减）
-        # ======================
         delta_u_k = (self.eta * self.phi / (self.lambda_weight + abs(self.phi) ** 2)) * error
-        step_increment = max(-delta_u_k, 0.0)  # phi为负、error为正，取反得到正的闭合步长
-
-        # 安全限幅
+        step_increment = max(-delta_u_k, 0.0)
         step_increment = min(step_increment, self.max_single_step)
-        # step_increment = min(step_increment, self.max_total_step - self.u_total)
 
-        # ======================
-        # 6. 统一保存状态
-        # ======================
         self._save_state(current_slip_prob, step_increment)
-        print("------step---------",step_increment )
+        print("------step---------", step_increment)
 
         return step_increment
 
     def _save_state(self, current_y, current_step):
-        """统一的状态保存函数，避免时序混乱"""
-        self.y_prev = current_y          # 保存本次的滑动概率，作为下一周期的y(k-1)
-        self.u_prev_step = current_step  # 保存本次执行的步长，作为下一周期的Δu(k-1)
-        self.u_total += current_step     # 更新累计步长
-
+        self.y_prev = current_y
+        self.u_prev_step = current_step
+        self.u_total += current_step
 
 
 # =============================================================================
-# 🌍 主程序（完全对接你的硬件）
+# 🌍 主程序
 # =============================================================================
 def main():
     sensor = TactileSensor()
@@ -242,18 +257,22 @@ def main():
         print("启动采集线程成功")
 
     # ======================
-    # 加载 Transformer 模型
+    # 加载模型 
     # ======================
-    detector = SlipDetector("/home/liuli/tactile_lstm/models/transformer_all.pth")
+    try:
+        #  修改路径：指向优化版训练生成的文件
+        detector = SlipDetector("/home/liuli/tactile_lstm/models/transformer2_full.pth")
+    except Exception as e:
+        print("无法初始化检测器，程序退出")
+        return
 
     # ======================
     # MFAC 控制器
     # ======================
     mfac_controller = SlipDrivenMFAC(
-        s_ref=0.1,                # 可根据实际效果微调
-        max_single_step=2,      # 单次最大闭合步长
-        # max_total_step=6.0,       # 累计最大闭合步长
-        max_force=50.0            # 法向力安全上限
+        s_ref=0.1,
+        max_single_step=2,
+        max_force=50.0
     )
 
     gripper.wrist_roll()

@@ -7,13 +7,13 @@ from sklearn.metrics import accuracy_score, f1_score
 import os
 
 # =============================================================================
-# 超参数 —— 极小模型 + 强正则
+# 超参数
 # =============================================================================
-INPUT_DIM = 624       # 加 Δforce 后的维度
-SEQ_LEN = 20          # 20帧一组
-D_MODEL = 32          # 大幅缩小
-N_HEAD = 2            # 2个注意力头
-NUM_LAYERS = 1        # 1层Encoder
+INPUT_DIM = 624       
+SEQ_LEN = 20          
+D_MODEL = 32          
+N_HEAD = 2            
+NUM_LAYERS = 1        
 BATCH_SIZE = 16
 EPOCHS = 30
 LR = 5e-5
@@ -51,7 +51,7 @@ class TactileDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 # =============================================================================
-# 🔥 最终超轻量 Transformer —— 每组20帧输出一个标签
+# TinyTactileTransformer 模型
 # =============================================================================
 class TinyTactileTransformer(nn.Module):
     def __init__(self):
@@ -72,35 +72,26 @@ class TinyTactileTransformer(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=NUM_LAYERS)
         
-        # 输出层（20帧 → 1个输出）
+        # 输出层
         self.norm = nn.LayerNorm(D_MODEL)
         self.drop = nn.Dropout(0.4)
         self.fc = nn.Linear(D_MODEL, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # x = (B, 20, 624)
-        
         x = self.proj(x)
         x = x + self.pos_emb
-        
-        # 时序特征提取
         x = self.transformer(x)
-        
-        # 关键：20帧全局池化 → 整段序列只输出1个结果！
         x = x.mean(dim=1)
-        
         x = self.norm(x)
         x = self.drop(x)
-        
-        # 最终输出：每组序列一个概率（滑/稳）
         out = self.sigmoid(self.fc(x))
         return out
 
 # =============================================================================
 # 训练 & 评估
 # =============================================================================
-def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, device, epochs, patience=8):
+def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, device, epochs, save_path, patience=8):
     best_acc = 0
     counter = 0
 
@@ -140,20 +131,25 @@ def train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, de
 
         if acc > best_acc:
             best_acc = acc
-            torch.save(model.state_dict(), "/home/liuli/tactile_lstm/models/transformer_all.pth")
+            # 这里不再单独保存 state_dict，而是在最后统一保存
+            # torch.save(model.state_dict(), save_path)
             counter = 0
-            print("✅ 保存最佳模型")
+            print("✅ 当前最佳模型")
         else:
             counter += 1
             if counter >= patience:
                 print("🛑 早停")
                 break
+    
+    return best_acc
 
 # =============================================================================
 # 主程序
 # =============================================================================
 if __name__ == "__main__":
     data_folder = "/home/liuli/tactile_lstm/train_data/data_all"
+    model_save_path = "/home/liuli/tactile_lstm/models/transformer_all.pth"
+    
     all_files = os.listdir(data_folder)
 
     train_files = [f for f in all_files if f.endswith(".npz") and not f.startswith("val_")]
@@ -162,29 +158,58 @@ if __name__ == "__main__":
     X_train, y_train = load_npz_list(data_folder, train_files)
     X_val, y_val = load_npz_list(data_folder, val_files)
 
-    # ======================
-    # 🔥 这里显示训练集 / 验证集数量
-    # ======================
     print(f"训练集数量: {X_train.shape[0]} 组序列")
     print(f"验证集数量: {X_val.shape[0]} 组序列")
     print(f"训练集滑/稳标签分布: {np.unique(y_train, return_counts=True)}")
     print(f"验证集滑/稳标签分布: {np.unique(y_val, return_counts=True)}")
 
-    # 加入Δforce
+    # ======================
+    # 🔥 1. 加入Δforce
+    # ======================
     X_train = add_delta_feature(X_train)
     X_val = add_delta_feature(X_val)
 
+    # ======================
+    # 🔥 2. 【新增】计算并保存训练集的 mean 和 std
+    # ======================
+    print("\n正在计算训练集标准化参数...")
+    # 注意：只在 X_train 上计算，保持 (1, 1, 624) 的维度以便广播
+    mean = X_train.mean(axis=(0, 1), keepdims=True)
+    std = X_train.std(axis=(0, 1), keepdims=True) + 1e-8
+    
+    # 应用标准化
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    print("标准化完成")
+
+    # ======================
     # 数据集
+    # ======================
     train_dataset = TactileDataset(X_train, y_train)
     val_dataset = TactileDataset(X_val, y_val)
 
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=16)
 
+    # ======================
     # 模型
+    # ======================
     model = TinyTactileTransformer().to(DEVICE)
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
 
-    print("\n🚀 超轻量Transformer训练开始（每组序列输出一个标签）\n")
-    train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, DEVICE, EPOCHS)
+    print("\n🚀 超轻量Transformer训练开始\n")
+    best_acc = train_and_evaluate(model, train_loader, val_loader, criterion, optimizer, DEVICE, EPOCHS, model_save_path)
+
+    # ======================
+    # 🔥 3. 【修改】保存完整 Checkpoint (包含 model, mean, std)
+    # ======================
+    print(f"\n💾 正在保存完整模型至: {model_save_path}")
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "mean": mean,
+        "std": std,
+        "best_acc": best_acc
+    }, model_save_path)
+    
+    print("✅ 模型保存完成！包含 model_state_dict, mean 和 std")

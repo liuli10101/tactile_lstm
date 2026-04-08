@@ -25,7 +25,7 @@ class HighSpeedCommBoard:
         self.dataset_X = []
         self.dataset_y = []
         self.current_label = 0  # 0无滑动,1滑动
-        self.save_path = "/home/liuli/tactile_lstm/train_data/data330/val_330_stable2.npz"
+        self.save_path = "/home/liuli/tactile_lstm/train_data/experiment/cylinder_stable.npz"
 
         #容量20的数据缓冲区
         self.tactile_data_fifo = deque(maxlen=20) 

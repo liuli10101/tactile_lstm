@@ -29,7 +29,7 @@ class HighSpeedCommBoard:
         self.count_0 = 20
         self.count_1 = 10
         self.record = 0     # 0不记录，1记录
-        self.save_path = "/home/liuli/tactile_lstm/train_data/data330/val_330_slip2.npz"
+        self.save_path = "/home/liuli/tactile_lstm/train_data/experiment/cylinder_slip.npz"
 
         #容量20的数据缓冲区
         self.tactile_data_fifo = deque(maxlen=20) 
